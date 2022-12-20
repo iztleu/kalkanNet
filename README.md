@@ -15,3 +15,9 @@ export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/kalkancrypt/:/opt/kalkancrypt/lib/e
 sudo cp -f ./C/Linux/C/libkalkancryptwr-64.so.2.0.4 /usr/lib/libkalkancryptwr-64.so
 sudo cp -r ./C/Linux/libs_for_linux/kalkancrypt /opt/
 ```
+
+## Лицензия
+
+The MIT License (MIT) 2022 - [Iztleu Darkhan](https://github.com/iztleu).
+
+Please have a look at the LICENSE.md for more details.
