@@ -54,58 +54,19 @@ public struct StKCFunctionsType
     public IntPtr ZipConSign;
 }
 
-
 public class KalkanClient
 {
-    private const string lib = "libkalkancryptwr-64.so";
-    private const string method = "KC_GetFunctionList";
-    private const int RTLD_NOW = 2;
-  
-    [DllImport("libdl")]
-    static extern IntPtr dlopen(String fileName, int flags);
+    [DllImport("kalkancryptwr-64", CallingConvention = CallingConvention.Cdecl)]
+    static extern int KC_GetFunctionList(out FunctionsType kc);
 
-    [DllImport("libdl")]
-    static extern IntPtr dlerror();
+    private static StKCFunctionsType StKCFunctionsType;
+    private static bool KcInit;
 
-    [DllImport("libdl")]
-    static extern IntPtr dlsym(IntPtr handle, String symbol);
-    
-    public KalkanClient(Options option, HttpClient httpClient)
+    static KalkanClient()
     {
-        HTTPClient = httpClient;
-        Option = option;
-        InitStKCFunctions();
-    }
-
-    HttpClient HTTPClient { get; set; }
-    Options Option { get; set; }
-    StKCFunctionsType StKCFunctionsType { get; set; }
-    private bool KeyStoreLoaded { get; set; }
-    private bool KcInit { get; set; }
-
-    public void InitStKCFunctions()
-    {
-        var moduleHandle = dlopen(lib, RTLD_NOW);
-
-        if (moduleHandle == IntPtr.Zero)
-        {
-            var error = Marshal.PtrToStringAnsi(dlerror());
-            throw new InvalidOperationException($"Couldn't load the unmanaged library {error}");
-        }
-            
-        var ptr = dlsym(moduleHandle, method);
-        if (ptr == IntPtr.Zero)
-        {
-            var error = Marshal.PtrToStringAnsi(dlerror());
-            throw new InvalidOperationException($"Couldn't invoke the unmanaged library {error}");
-        }
-        
-        KC_GetFunctionList1 functionList;
-        var functionsType = new FunctionsType();
         StKCFunctionsType kc = new StKCFunctionsType();
-        
-        functionList = (KC_GetFunctionList1)Marshal.GetDelegateForFunctionPointer(ptr, typeof(KC_GetFunctionList1));
-        int result = functionList(ref functionsType);
+
+        int result = KC_GetFunctionList(out var functionsType);
         if (result != 0)
         {
             throw new InvalidOperationException($"Couldn't get function list result: {result}");
@@ -117,42 +78,46 @@ public class KalkanClient
         }
 
         var errCode = StKCFunctionsType.KC_Init();
-        if (errCode == 0)
-        {
-            KcInit = true;
-        }
-        else
-        {
-            var err = new StringBuilder(500); 
-            var errLength = err.Capacity;
-            errCode = StKCFunctionsType.KC_GetLastErrorString(err, out errLength);
-        }
+        ThrowIfError(errCode);
+        KcInit = true;
     }
+
+    public KalkanClient(KalkanOptions option, HttpClient httpClient)
+    {
+        HTTPClient = httpClient;
+        Option = option;
+    }
+
+    public KalkanClient(KalkanOptions option)
+        : this(option, new HttpClient())
+    {
+    }
+
+    HttpClient HTTPClient { get; set; }
+    KalkanOptions Option { get; set; }
+    private bool KeyStoreLoaded { get; set; }
 
     public void LoadKeyStore(string password, string containerPath, KCStoreType storeType, string alias)
     {
+        EnsureInitialized();
         var errCode = StKCFunctionsType.KC_LoadKeyStore((int)storeType, password, password.Length, containerPath, containerPath.Length, alias);
-        if (errCode == 0)
-        {
-            KeyStoreLoaded = true;
-        }
-        else
-        {
-            var err = new StringBuilder(500); 
-            var errLength = err.Capacity;
-            errCode = StKCFunctionsType.KC_GetLastErrorString(err, out errLength);
+        ThrowIfError(errCode);
 
-        }
+        KeyStoreLoaded = true;
     }
     
     public string SignXML(string xml, string alias, string signNodeId, string parentSignNode, string parentNameSpace)
     {
-        if (!KeyStoreLoaded) return "";
-        
+        EnsureInitialized();
+        if (!KeyStoreLoaded)
+        {
+            throw new InvalidOperationException("Key store is not loaded");
+        }
+
         var outSign = new StringBuilder(xml.Length + 5000); 
-        var outSignLenght = outSign.Capacity;
-        var errCode = StKCFunctionsType.SignXML(alias, 0, xml, xml.Length, outSign,  out outSignLenght, signNodeId, parentSignNode, parentNameSpace);
-        return errCode == 0 ? outSign.ToString() : "";
+        var errCode = StKCFunctionsType.SignXML(alias, 0, xml, xml.Length, outSign, out var outSignLength, signNodeId, parentSignNode, parentNameSpace);
+        ThrowIfError(errCode);
+        return outSign.ToString();
     }
     
     public static List<OptionCert> GetProdCert()
@@ -167,7 +132,7 @@ public class KalkanClient
             new(URL: "https://pki.gov.kz/cert/nca_gost2015.cer", Type: KCCertType.KCCertTypeIntermediate)
         };
     }
-    
+
     public static List<OptionCert> GetTestCert()
     {
         return new List<OptionCert>
@@ -179,18 +144,37 @@ public class KalkanClient
         };
     }
 
+    private static void EnsureInitialized()
+    {
+        if (!KcInit)
+        {
+            throw new InvalidOperationException("The Kalcancrypt was not initialized");
+        }
+    }
+
+    private static void ThrowIfError(ulong errorCode)
+    {
+        if (errorCode == 0)
+        {
+            return;
+        }
+
+        var err = new StringBuilder(500);
+        StKCFunctionsType.KC_GetLastErrorString(err, out _);
+        throw new InvalidOperationException(err.ToString());
+    }
 }
 
-public class Options
+public class KalkanOptions
 {
-    public String TCP { get; set; } = "http://tsp.pki.gov.kz:80";
-    public String OCSP { get; set; } = "http://ocsp.pki.gov.kz";
+    public string TCP { get; set; } = "http://tsp.pki.gov.kz:80";
+    public string OCSP { get; set; } = "http://ocsp.pki.gov.kz";
     public Uri Proxy { get; set; }
     public List<OptionCert> Certs { get; set; }
-    public String CRLGOST { get; set; } = "https://crl.pki.gov.kz/nca_gost.crl";
-    public String CRLRSA { get; set; } = "https://crl.pki.gov.kz/nca_rsa.crl";
-    public String CRLDeltaGOST { get; set; } = "https://crl.pki.gov.kz/nca_d_gost.crl";
-    public String CRLDeltaRSA { get; set; } = "https://crl.pki.gov.kz/nca_d_rsa.crl";
+    public string CRLGOST { get; set; } = "https://crl.pki.gov.kz/nca_gost.crl";
+    public string CRLRSA { get; set; } = "https://crl.pki.gov.kz/nca_rsa.crl";
+    public string CRLDeltaGOST { get; set; } = "https://crl.pki.gov.kz/nca_d_gost.crl";
+    public string CRLDeltaRSA { get; set; } = "https://crl.pki.gov.kz/nca_d_rsa.crl";
     public CrlCache crlCache { get; set; } = new CrlCache();
     public bool LoadCRLCacheOnInit { get; set; } = true;
     public bool LoadCACertsOnInit { get; set; } = true;
@@ -206,8 +190,7 @@ public class CrlCache
     public TimeSpan CRLCacheDuration { get; set; } = new TimeSpan(hours:0, minutes:60, seconds:0);
 }
 
-public record OptionCert(String URL, KCCertType Type);
-
+public record OptionCert(string URL, KCCertType Type);
 
 public enum KCCertType
 {
